@@ -1,0 +1,7 @@
+{
+  "jira_base_url": "https://your-company.atlassian.net",
+  "jira_email": "you@example.com",
+  "default_project": "OPS",
+  "notes_dir": "~/notes/jira",
+  "projects_dir": "~/code"
+}
