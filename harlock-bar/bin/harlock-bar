@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Avvia harlock-bar con il Python di sistema, ovunque sia il symlink (xbar lo chiama dalla sua cartella plugin).
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")"
+ROOT="$(dirname "$(dirname "$SELF")")"
+# xbar parte con un PATH minimo: servono cc-panel, claude e Ghostty per riprendere le sessioni.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+PYTHONPATH="$ROOT" exec /usr/bin/python3 -c 'import sys; from harlock_bar.cli import main; sys.exit(main())' "$@"

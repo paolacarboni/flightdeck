@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Avvia news-panel con il Python di sistema, ovunque sia il symlink.
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")"
+ROOT="$(dirname "$(dirname "$SELF")")"
+PYTHONPATH="$ROOT" exec /usr/bin/python3 -c 'import sys; from news_panel.cli import main; sys.exit(main())' "$@"

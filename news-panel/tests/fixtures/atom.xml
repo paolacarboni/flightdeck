@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom"><title>A</title>
+<entry><title>Post atom</title><link rel="alternate" href="https://ex.com/atom"/><updated>2026-10-17T06:30:00.123+00:00</updated><summary>Riassunto</summary></entry>
+<entry><title>Post Z</title><link href="https://ex.com/z"/><published>2026-10-16T22:00:00Z</published><content type="html">&lt;p&gt;Corpo&lt;/p&gt;</content></entry>
+</feed>
