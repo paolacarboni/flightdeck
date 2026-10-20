@@ -1,6 +1,7 @@
 import json
 import time
 from datetime import datetime
+from unittest import mock
 
 from news_panel import edition
 from tests.helpers import TempHomeCase
@@ -105,3 +106,20 @@ class RunTest(TempHomeCase):
         saved = json.loads(target.read_text())
         self.assertEqual(saved["edition"], "2026-10-16")
         self.assertIn("rete", saved["error"])
+
+
+class ClaudeRunnerTest(TempHomeCase):
+    def run_claude(self):
+        completed = mock.Mock(returncode=0, stderr="", stdout=json.dumps({"structured_output": {"headline": "ok"}}))
+        with mock.patch("news_panel.edition.subprocess.run", return_value=completed) as run:
+            self.assertEqual(edition.claude_runner("prompt"), {"headline": "ok"})
+        return run.call_args.kwargs["input"]
+
+    def test_prompt_is_unchanged_without_work_item(self):
+        self.assertEqual(self.run_claude(), "prompt")
+
+    def test_work_item_is_declared_in_the_prompt(self):
+        target = self.home / ".claude/news-panel/work-item"
+        target.parent.mkdir(parents=True)
+        target.write_text("  AI-1\n")
+        self.assertEqual(self.run_claude(), "Work-item: AI-1\n\nprompt")

@@ -78,6 +78,18 @@ def _lock_file():
     return home() / ".claude/news-panel/fetch.lock"
 
 
+def _work_item_file():
+    return home() / ".claude/news-panel/work-item"
+
+
+def _work_item():
+    """Optional work reference for environments whose hooks require one on every `claude -p`."""
+    try:
+        return _work_item_file().read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def load():
     try:
         cache = json.loads(_cache_file().read_text(encoding="utf-8"))
@@ -164,6 +176,9 @@ def summarize(items, runner):
 
 
 def claude_runner(prompt):
+    work_item = _work_item()
+    if work_item:
+        prompt = "Work-item: %s\n\n%s" % (work_item, prompt)
     claude = shutil.which("claude") or str(Path.home() / ".local/bin/claude")
     command = [claude, "-p", "--model", "haiku", "--no-session-persistence", "--tools", "",
                "--output-format", "json", "--json-schema", json.dumps(SCHEMA)]

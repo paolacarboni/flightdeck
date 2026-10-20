@@ -33,6 +33,9 @@ If it does not answer, the panel shows the most voted items.
 
 Requirements: `/usr/bin/python3` (3.9+), `claude` in the `PATH` (or in `~/.local/bin`) for the summary.
 
+If `~/.claude/news-panel/work-item` exists, the prompt starts with `Work-item: <ID>`: some managed
+Claude Code setups block `claude -p` without a work reference.
+
 ## Files
 
 | Path | Content |
