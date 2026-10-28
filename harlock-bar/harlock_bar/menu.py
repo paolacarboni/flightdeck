@@ -216,13 +216,14 @@ def _ticket_actions(t, board, ctx, depth):
 
 def ticket_section(board, now, ctx):
     """In alto i ticket con una sessione Claude aperta; il resto in un sottomenu per epica, ognuna col suo colore."""
+    error = [line("Jira non aggiornato: " + clean(ctx["boardError"], 80), color=RED)] if ctx.get("boardError") else []
     if not board:
-        return [line("Ticket: dati non ancora disponibili", color=DIM)]
+        return [line("Ticket: dati non ancora disponibili", color=DIM)] + error
     groups = _groups(board)
     color_of = {t["key"]: color for _, tickets, color in groups for t in tickets}
     total = sum(len(tickets) for _, tickets, _ in groups)
     updated = datetime.fromtimestamp(board.get("updatedAt", now)).strftime("%H:%M")
-    lines = [line("Ticket in lavorazione · %d · Jira delle %s" % (total, updated), size=12)]
+    lines = [line("Ticket in lavorazione · %d · Jira delle %s" % (total, updated), size=12)] + error
     active = sorted((t for _, tickets, _ in groups for t in tickets if _session_kind(t) != "none"),
                     key=lambda t: ORDER[_session_kind(t)])
     for t in active[:MAX_ACTIVE]:

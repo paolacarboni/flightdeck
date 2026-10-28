@@ -113,6 +113,12 @@ git clone https://github.com/paolacarboni/flightdeck.git ~/code/flightdeck
 `~/.claude/commands`) and never overwrites real files. Then configure Jira for cc-panel as described in
 [cc-panel/README.md](cc-panel/README.md#configuration); focus-panel and harlock-bar reuse it.
 
+**Start at login.** The panels and the menu bar exist only while Übersicht and xbar are running, so both
+must open at login. On macOS 13 or later: System Settings › General › Login Items › *Open at Login* › `+`,
+then add `/Applications/Übersicht.app` and `/Applications/xbar.app`. The same switch is in each app:
+Übersicht › Preferences › *Launch Übersicht when I login*, xbar › Preferences › *Start at Login*.
+On the first launch macOS asks to confirm opening an app downloaded from the internet: choose *Open*.
+
 **Just looking?** In `cc-panel/widget/index.jsx` set `const DEMO = true;`: the project display shows
 invented data, no Jira needed. harlock-panel needs nothing at all.
 

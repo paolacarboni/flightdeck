@@ -12,6 +12,7 @@ from harlock_bar import menu
 
 ROOT = Path(__file__).resolve().parent.parent
 BOARD_MAX_AGE = 15 * 60  # oltre, i ticket si rileggono da Jira in background
+BOARD_TIMEOUT = 90
 KEY = re.compile(r"^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]{0,6}$")
 TITLE = "Arcadia"
 
@@ -34,6 +35,11 @@ def focus_cli():
 
 def cc_cli():
     return str(_home_path("HARLOCK_CC_CLI", ".local/bin/cc-panel"))
+
+
+def xbar_plugin():
+    """Nome del plugin nella cartella di xbar, per chiedergli di ridisegnare il menu."""
+    return os.environ.get("HARLOCK_XBAR_PLUGIN") or "harlock-bar.30s.sh"
 
 
 # ------------------------------------------------------------------ processi e dialoghi
@@ -109,10 +115,35 @@ def refresh_board(now):
     state = load_state()
     if now - state.get("boardRefresh", 0) < BOARD_MAX_AGE:
         return False
-    spawn([cc_cli(), "board", "--json"])
+    spawn([str(ROOT / "bin/harlock-bar"), "sync"])
     state["boardRefresh"] = now
     save_state(state)
     return True
+
+
+def refresh_xbar():
+    run(["open", "-g", "xbar://app.xbarapp.com/refreshPlugin?path=" + xbar_plugin()], timeout=10)
+
+
+def sync_board():
+    """Rilegge i ticket da Jira (cc-panel riscrive board.json) e annota l'errore per il menu.
+
+    Restituisce (modello, errore). Alla fine ridisegna il menu: xbar l'ha già ridisegnato al clic,
+    prima che arrivassero i dati.
+    """
+    code, out, err = run([cc_cli(), "board", "--json"], timeout=BOARD_TIMEOUT)
+    try:
+        model = json.loads(out)
+    except ValueError:
+        model = None
+    if not isinstance(model, dict):
+        model = None
+    error = (model or {}).get("error")
+    if not error and (code != 0 or model is None):
+        error = (err or out).splitlines()[-1] if (err or out) else "cc-panel board non risponde"
+    save_state(dict(load_state(), boardError=error))
+    refresh_xbar()
+    return model, error
 
 
 def _read_json(path):
@@ -157,9 +188,10 @@ def show():
     now = time.time()
     focus = load_focus()
     alert_box(focus)
+    board = load_board(now)
     ctx = {"icon": base64.b64encode((ROOT / "icon/harlock.png").read_bytes()).decode("ascii"),
-           "cmd": str(ROOT / "bin/harlock-bar"), "day_end": _day_end()}
-    print("\n".join(menu.build(focus, load_board(now), now, ctx)))
+           "cmd": str(ROOT / "bin/harlock-bar"), "day_end": _day_end(), "boardError": load_state().get("boardError")}
+    print("\n".join(menu.build(focus, board, now, ctx)))
     return 0
 
 
@@ -199,9 +231,15 @@ def main(argv=None):
         notify("Riprendo %s…" % args[0])
         return 0
     if command == "board":
-        save_state(dict(load_state(), boardRefresh=0))
-        refresh_board(time.time())
-        notify("Rileggo i ticket da Jira…")
+        # Il clic aspetta Jira: così l'esito arriva nella notifica e nel menu ridisegnato subito dopo.
+        save_state(dict(load_state(), boardRefresh=time.time()))
+        model, error = sync_board()
+        if error:
+            notify("Jira non aggiornato: %s" % error)
+            return 1
+        notify("Ticket aggiornati da Jira: %d in lavorazione" % len(menu.in_progress(model)))
         return 0
+    if command == "sync":
+        return 1 if sync_board()[1] else 0
     print("Comando sconosciuto: %s" % command, file=sys.stderr)
     return 2

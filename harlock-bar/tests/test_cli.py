@@ -77,6 +77,54 @@ class BoardTest(TempHomeCase):
         self.assertIsNone(cli.load_board(now=1000.0))
         self.spawn.assert_called_once()
 
+    def test_aggiornamento_in_background_annota_l_esito(self):
+        # Il processo staccato è `harlock-bar sync`, non cc-panel: così l'errore Jira resta nello stato.
+        cli.load_board(now=1000.0)
+        self.assertEqual(self.spawn.call_args[0][0][1:], ["sync"])
+
+
+class SyncTest(TempHomeCase):
+    def setUp(self):
+        super().setUp()
+        self.refresh = mock.patch("harlock_bar.cli.refresh_xbar").start()
+
+    def model(self, error=None):
+        ticket = {"key": "OPS-1", "statusCategory": "indeterminate"}
+        model = {"updatedAt": 1000, "epics": [{"key": "OPS-0", "items": [ticket, dict(ticket, key="OPS-2")]}],
+                 "noEpic": []}
+        if error:
+            model.update(error=error, stale=True)
+        return json.dumps(model)
+
+    def test_aggiorna_aspetta_jira_avvisa_e_ridisegna_il_menu(self):
+        with mock.patch("harlock_bar.cli.run", return_value=(0, self.model(), "")) as run:
+            self.assertEqual(cli.main(["board"]), 0)
+        self.assertEqual(run.call_args[0][0][1:], ["board", "--json"])
+        self.spawn.assert_not_called()
+        self.notify.assert_called_once_with("Ticket aggiornati da Jira: 2 in lavorazione")
+        self.refresh.assert_called_once()
+        self.assertIsNone(cli.load_state().get("boardError"))
+
+    def test_errore_jira_notificato_e_conservato_per_il_menu(self):
+        with mock.patch("harlock_bar.cli.run", return_value=(0, self.model("token scaduto o non valido"), "")):
+            self.assertEqual(cli.main(["board"]), 1)
+        self.notify.assert_called_once_with("Jira non aggiornato: token scaduto o non valido")
+        self.refresh.assert_called_once()
+        self.assertEqual(cli.load_state()["boardError"], "token scaduto o non valido")
+
+    def test_cc_panel_che_non_risponde(self):
+        with mock.patch("harlock_bar.cli.run", return_value=(1, "", "Traceback\nOSError: boom")):
+            self.assertEqual(cli.main(["sync"]), 1)
+        self.assertEqual(cli.load_state()["boardError"], "OSError: boom")
+        self.notify.assert_not_called()
+
+    def test_lettura_riuscita_cancella_l_errore_precedente(self):
+        cli.save_state({"boardError": "vecchio"})
+        with mock.patch("harlock_bar.cli.run", return_value=(0, self.model(), "")):
+            self.assertEqual(cli.main(["sync"]), 0)
+        self.assertIsNone(cli.load_state()["boardError"])
+        self.refresh.assert_called_once()
+
 
 class ActionTest(TempHomeCase):
     def test_azione_focus_riuscita(self):

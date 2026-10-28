@@ -29,15 +29,19 @@ Requirements: `/usr/bin/python3` (3.9+), focus-panel and cc-panel installed in `
 ## Data
 
 The menu is rebuilt every 30 seconds from `focus-panel show` (local) and `~/.claude/cc-panel/board.json`.
-If the board is older than 15 minutes, `cc-panel board --json` refreshes it from Jira in background (at
-most once every 15 minutes); *Aggiorna i ticket da Jira* does it now. cc-panel rewrites the board in place,
-so the last readable copy is kept in `~/.claude/harlock-bar/board.json`.
+If the board is older than 15 minutes, `harlock-bar sync` refreshes it from Jira in background (at most
+once every 15 minutes); *Aggiorna i ticket da Jira* does it now and waits for Jira: a notification gives
+the outcome and xbar redraws the menu when the data has arrived. The error of the last Jira read, if any,
+stays in red under *Ticket in lavorazione* until a read succeeds. xbar's own refresh only redraws the menu
+from the local data. cc-panel rewrites the board in place, so the last readable copy is kept in
+`~/.claude/harlock-bar/board.json`.
 
 | Variable | Default |
 |---|---|
 | `HARLOCK_DAY_END` | `18:30` |
 | `HARLOCK_FOCUS_CLI`, `HARLOCK_CC_CLI` | `~/.local/bin/focus-panel`, `~/.local/bin/cc-panel` |
 | `HARLOCK_BAR_HOME` | `~/.claude/harlock-bar` (notifications already sent, last copy of the board) |
+| `HARLOCK_XBAR_PLUGIN` | `harlock-bar.30s.sh` (file name in the xbar plugin folder, to redraw the menu) |
 
 ## Icon
 

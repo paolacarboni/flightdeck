@@ -128,6 +128,14 @@ class TicketTest(unittest.TestCase):
     def test_senza_board(self):
         self.assertIn("Ticket: dati non ancora disponibili | color=#7d8799", lines_of(board=None))
 
+    def test_errore_dell_ultima_lettura_jira_in_rosso(self):
+        ctx = dict(CTX, boardError="Jira: token scaduto | 401")
+        for b in (board([ticket("OPS-3", "Tre")]), None):
+            self.assertIn("Jira non aggiornato: Jira: token scaduto ¦ 401 | color=#ff6b5e", lines_of(board=b, ctx=ctx))
+
+    def test_senza_errore_nessuna_riga_di_errore(self):
+        self.assertFalse(any("Jira non aggiornato" in l for l in lines_of()))
+
 
 class DeadlineTest(unittest.TestCase):
     def test_scadenze_in_una_riga_con_il_dettaglio_nel_sottomenu(self):
