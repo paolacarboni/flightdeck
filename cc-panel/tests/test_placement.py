@@ -91,6 +91,35 @@ class RankTest(TempHomeCase):
         self.assertLessEqual(self.timeout, 2.0)
         self.assertEqual(self.warnings, [])
 
+    def test_dense_timeout_is_the_remaining_budget(self):
+        original = repoindex.load
+
+        def slow_load():
+            self.clock.now = 0.5
+            return original()
+
+        def dense(text, timeout):
+            self.timeout = timeout
+            return {}
+        with mock.patch("cc_panel.repoindex.load", side_effect=slow_load):
+            self.rank(dense)
+        self.assertAlmostEqual(self.timeout, 2.0 - 0.5 - placement.FUSION_RESERVE_SECONDS)
+
+    def test_mismatched_vectors_trigger_a_rebuild(self):
+        def dense(text, timeout):
+            raise placement.DenseError("IndexMismatch: vettori non allineati", rebuild=True)
+        self.assertEqual(len(self.rank(dense)), 3)
+        self.spawned_index.assert_called_once()
+        self.assertIn("ricostruisco l'indice", self.warnings[0])
+
+    def test_dense_scores_outside_the_index_are_discarded(self):
+        for scores in ({99: (0.9, 0)}, {0: (0.9, 999)}, {0: (0.9, 3)}):
+            with self.subTest(scores=scores):
+                self.spawned_index.reset_mock()
+                results = self.rank(lambda text, timeout, scores=scores: scores)
+                self.assertTrue(all(not evidence.startswith("README") for _, evidence in results[1:]))
+                self.spawned_index.assert_called_once()
+
     def test_dense_failure_gives_lexical_results_and_a_warning(self):
         results = self.rank()
         self.assertEqual(len(results), 3)
@@ -143,6 +172,18 @@ class RankTest(TempHomeCase):
         self.write_meta(self.candidates)
         self.assertEqual(self.rank()[0][0], worktree)
 
+    def test_worktree_must_contain_the_whole_key(self):
+        main = self.folders["alpha-service"]
+        cases = [("alpha-ops-572-ci", "OPS-57", main), ("alpha-ops586", "OPS-586", "alpha-ops586"),
+                 ("alpha-OPS-9", "OPS-9", "alpha-OPS-9"), ("alpha-OPS-90", "OPS-9", main), ("xai-9", "OPS-9", main)]
+        for name, key, expected in cases:
+            with self.subTest(name=name, key=key):
+                worktree = self.home / "Projects" / name
+                worktree.mkdir(exist_ok=True)
+                candidate = dict(self.candidates[0], folders=[str(main), str(worktree)])
+                found = placement._folder(candidate, key)
+                self.assertEqual(found, worktree if isinstance(expected, str) else expected)
+
     def test_deleted_folders_are_skipped(self):
         self.folders["alpha-service"].rmdir()
         results = self.rank(self.dense_all)
@@ -189,6 +230,14 @@ class DenseProcessTest(TempHomeCase):
         self.assertEqual((popen.input, popen.timeout), ("testo", 1.5))
         self.assertEqual(popen.command[:4], ["/venv/bin/python", "-m", "cc_panel.embed", "query"])
         self.assertFalse(popen.killed)
+
+    def test_index_mismatch_in_the_child_asks_for_a_rebuild(self):
+        with self.assertRaises(placement.DenseError) as raised:
+            self.run_dense(FakePopen("", "Traceback\nIndexMismatch: vettori non allineati", code=1))
+        self.assertTrue(raised.exception.rebuild)
+        with self.assertRaises(placement.DenseError) as raised:
+            self.run_dense(FakePopen("", "MemoryError", code=1))
+        self.assertFalse(raised.exception.rebuild)
 
     def test_child_failures_become_dense_errors(self):
         cases = [FakePopen("", "Traceback\nIndexMismatch: vettori", code=1), FakePopen("non json"),

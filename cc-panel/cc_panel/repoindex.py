@@ -4,20 +4,34 @@ Candidati: repo git sotto ~/Projects fino a profondità 5, raggruppati per remot
 dello stesso repo sono un solo candidato). Per ogni candidato, frammenti di testo: nome, struttura,
 README e sessioni Claude in cui ci si è lavorato. L'indice si costruisce fuori dal percorso di `start`
 (`cc-panel index`, avviato in background dal pannello); i vettori li calcola `embed.py` nel venv.
+Meta e vettori nuovi si preparano in file `.next` e si pubblicano insieme: chi legge vede sempre una coppia
+coerente, salvo i millisecondi delle sostituzioni.
 """
 import json
 import os
 import re
 import subprocess
 import time
+import uuid
 from pathlib import Path
 
-from cc_panel import config, folders, history, paths
+from cc_panel import config, folders, history, paths, semantic
 
 VERSION = 1
 SEARCH_DEPTH = 5
 MAX_AGE_SECONDS = 12 * 3600
-LOCK_STALE_SECONDS = 15 * 60
+# Oltre il timeout del calcolo dei vettori, più il tempo della scansione: una build viva non risulta mai scaduta.
+LOCK_STALE_SECONDS = semantic.INDEX_TIMEOUT_SECONDS + 5 * 60
+SPAWN_BACKOFF_SECONDS = 15 * 60
+META = "meta.json"
+VECTORS = "vectors.npy"
+VECTORS_INFO = "vectors.json"
+NEXT_META = "meta.next.json"
+NEXT_VECTORS = "vectors.next.npy"
+NEXT_VECTORS_INFO = "vectors.next.json"
+CACHE = "cache.npz"
+LOCK = "index.lock"
+SPAWN_MARKER = "last-spawn"
 README_NAMES = ("README.md", "README.MD", "readme.md", "README.rst", "README.txt", "README")
 README_BLOCK = 800
 README_BLOCKS = 3
@@ -26,11 +40,14 @@ CHILDREN_LIMIT = 15
 SESSION_LIMIT = 30
 SESSION_TEXT_LIMIT = 500
 SESSION_MAX_KEYS = 3
+DISTINCTIVE_NAME = 8
 LABEL_LIMIT = 60
 WORKTREES_DIR = ".worktrees"
 _ORIGIN_SECTION = re.compile(r'^\s*\[remote\s+"origin"\]\s*$')
 _URL = re.compile(r"^\s*url\s*=\s*(\S+)\s*$")
 _GITDIR = re.compile(r"^gitdir:\s*(.+?)\s*$", re.M)
+_URL_WITH_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+)$", re.I)
+_SCP_LIKE = re.compile(r"^(?:[^@/]+@)?([^/:]+):(.+)$")
 _CODE_FENCE = re.compile(r"```.*?```|~~~.*?~~~", re.S)
 _IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
@@ -69,8 +86,7 @@ def _scan():
     return found
 
 
-def origin_name(git_dir):
-    """Nome del repo dal remote origin in <git_dir>/config, senza .git; None se manca."""
+def _origin_url(git_dir):
     try:
         lines = (git_dir / "config").read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
@@ -82,9 +98,21 @@ def origin_name(git_dir):
             continue
         match = _URL.match(line) if in_origin else None
         if match:
-            name = match.group(1).rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
-            return name[:-4] if name.endswith(".git") else name
+            return match.group(1)
     return None
+
+
+def origin(git_dir):
+    """(chiave, nome) del remote origin: chiave = host/percorso senza utente, schema e .git, così https e ssh
+    dello stesso repo coincidono e un fork resta distinto; (None, None) se manca."""
+    url = _origin_url(git_dir) if git_dir else None
+    if not url:
+        return None, None
+    url = url.rstrip("/")
+    match = _URL_WITH_SCHEME.match(url) or _SCP_LIKE.match(url)
+    key = "%s/%s" % (match.group(1).lower(), match.group(2)) if match else url
+    key = key[:-4] if key.endswith(".git") else key
+    return key, key.rsplit("/", 1)[-1]
 
 
 def _main_git_dir(folder):
@@ -110,8 +138,8 @@ def candidates():
     groups = {}
     for folder in _scan():
         git_dir = _main_git_dir(folder)
-        remote = origin_name(git_dir) if git_dir else None
-        key = "origin:%s" % remote if remote else str(git_dir.parent if git_dir else folder)
+        remote_key, remote = origin(git_dir)
+        key = "origin:%s" % remote_key if remote_key else str(git_dir.parent if git_dir else folder)
         group = groups.setdefault(key, {"group": key, "folders": [], "names": [], "remote": remote})
         group["folders"].append(folder)
     found = []
@@ -129,7 +157,9 @@ def candidates():
 
 def _manifest_description(folder):
     try:
-        return json.loads((folder / "package.json").read_text(encoding="utf-8")).get("description") or ""
+        description = json.loads((folder / "package.json").read_text(encoding="utf-8")).get("description")
+        if isinstance(description, str):
+            return description
     except (OSError, ValueError, AttributeError):
         pass
     for name, pattern in (("pyproject.toml", _PYPROJECT), ("pom.xml", _POM)):
@@ -192,6 +222,11 @@ def _common_parents(parts, folder):
     return common
 
 
+def _distinctive(name):
+    """Nome abbastanza specifico da riconoscere una cartella spostata anche senza genitori in comune."""
+    return len(name) >= DISTINCTIVE_NAME or "-" in name or "_" in name
+
+
 def _owner_function(candidates_):
     """Indice del candidato che contiene un percorso. Un percorso che non esiste più (cartelle riorganizzate)
     si ritrova per nome di cartella: a parità, vince il candidato con più cartelle genitrici uguali; ambiguo → None."""
@@ -207,8 +242,10 @@ def _owner_function(candidates_):
                 best, depth = index, len(folder.parts)
         if best is not None or path.exists():
             return best
-        scored = sorted(((_common_parents(path.parts[:position], folder), position, index)
-                         for position, part in enumerate(path.parts) for index, folder in by_name.get(part, [])),
+        scored = sorted(((common, position, index)
+                         for position, part in enumerate(path.parts) for index, folder in by_name.get(part, [])
+                         for common in [_common_parents(path.parts[:position], folder)]
+                         if common or _distinctive(part)),
                         reverse=True)
         if not scored:
             return None
@@ -270,38 +307,67 @@ def chunks(candidates_, sessions):
 
 
 def _acquire_lock():
-    lock = index_dir() / "index.lock"
+    """Token del lock appena preso, None se un'altra build è viva. La scadenza si misura sull'mtime del file:
+    un lock appena creato e ancora vuoto vale come vivo."""
+    lock = index_dir() / LOCK
     lock.parent.mkdir(parents=True, exist_ok=True)
+    token = "%d-%s" % (os.getpid(), uuid.uuid4().hex)
     for _ in range(2):
         try:
             fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             try:
-                fresh = time.time() - float(lock.read_text(encoding="utf-8")) < LOCK_STALE_SECONDS
-            except (OSError, ValueError):
-                fresh = False
-            if fresh:
-                return False
+                age = time.time() - lock.stat().st_mtime
+            except OSError:
+                continue
+            if age < LOCK_STALE_SECONDS:
+                return None
             try:
                 lock.unlink()
             except OSError:
-                return False
+                return None
             continue
         with os.fdopen(fd, "w") as handle:
-            handle.write(str(time.time()))
-        return True
-    return False
+            handle.write(token)
+        return token
+    return None
+
+
+def _release_lock(token):
+    lock = index_dir() / LOCK
+    try:
+        if lock.read_text(encoding="utf-8") == token:
+            lock.unlink()
+    except OSError:
+        pass
 
 
 def _write_json(path, data):
-    temporary = path.with_name(path.name + ".tmp")
+    temporary = path.with_name("tmp-" + path.name)
     temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     os.replace(str(temporary), str(path))
 
 
+def _clean_next(folder):
+    """File di una build non pubblicata (anche di una build morta a metà)."""
+    for path in folder.glob("*"):
+        if path.name in (NEXT_META, NEXT_VECTORS, NEXT_VECTORS_INFO) or path.name.startswith("tmp-"):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def _publish(folder):
+    """Sostituisce la coppia pubblicata: prima i vettori, per ultimo il meta."""
+    for staged, published in ((NEXT_VECTORS, VECTORS), (NEXT_VECTORS_INFO, VECTORS_INFO)):
+        if (folder / staged).exists():
+            os.replace(str(folder / staged), str(folder / published))
+    os.replace(str(folder / NEXT_META), str(folder / META))
+
+
 def _vectors_in_venv(folder):
-    """Calcola i vettori con il python del venv; senza venv l'indice resta solo lessicale."""
-    from cc_panel import semantic
+    """Calcola i vettori di meta.next.json con il python del venv; senza venv l'indice resta solo lessicale."""
     python = semantic.python()
     if not python:
         return
@@ -316,27 +382,37 @@ def _vectors_in_venv(folder):
 
 
 def build(now=None, indexed=None, vectors=None):
-    """Ricostruisce l'indice; None se un'altra costruzione è in corso. VectorsError se i vettori non si calcolano:
-    meta.json resta scritto e la ricerca usa solo le parole."""
-    if not _acquire_lock():
+    """Ricostruisce e pubblica l'indice; None se un'altra build è in corso.
+
+    VectorsError se i vettori non si calcolano: resta pubblicata la coppia precedente; alla prima build si
+    pubblica comunque il meta, che basta alla ricerca per parole.
+    """
+    token = _acquire_lock()
+    if token is None:
         return None
+    folder = index_dir()
     try:
+        _clean_next(folder)
         candidates_ = candidates()
         meta = {"version": VERSION, "builtAt": now if now is not None else time.time(),
                 "candidates": candidates_, "chunks": chunks(candidates_, history.index() if indexed is None else indexed)}
-        _write_json(index_dir() / "meta.json", meta)
-        (vectors or _vectors_in_venv)(index_dir())
+        _write_json(folder / NEXT_META, meta)
+        try:
+            (vectors or _vectors_in_venv)(folder)
+        except VectorsError:
+            if not (folder / META).exists():
+                os.replace(str(folder / NEXT_META), str(folder / META))
+            raise
+        _publish(folder)
         return meta
     finally:
-        try:
-            (index_dir() / "index.lock").unlink()
-        except OSError:
-            pass
+        _clean_next(folder)
+        _release_lock(token)
 
 
 def load():
     try:
-        meta = json.loads((index_dir() / "meta.json").read_text(encoding="utf-8"))
+        meta = json.loads((index_dir() / META).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(meta, dict) or meta.get("version") != VERSION:
@@ -350,8 +426,21 @@ def is_stale(meta, now):
     return meta is None or now - meta.get("builtAt", 0) > MAX_AGE_SECONDS
 
 
-def spawn_build():
-    """Avvia `cc-panel index` staccato dal chiamante."""
+def spawn_build(now=None):
+    """Avvia `cc-panel index` staccato dal chiamante, al massimo una volta ogni 15 minuti; True se avviato."""
+    now = time.time() if now is None else now
+    marker = index_dir() / SPAWN_MARKER
+    try:
+        if now - float(marker.read_text(encoding="utf-8")) < SPAWN_BACKOFF_SECONDS:
+            return False
+    except (OSError, ValueError):
+        pass
     cli = Path(__file__).resolve().parent.parent / "bin" / "cc-panel"
-    subprocess.Popen([str(cli), "index"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, start_new_session=True)
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(now), encoding="utf-8")
+        subprocess.Popen([str(cli), "index"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return False
+    return True

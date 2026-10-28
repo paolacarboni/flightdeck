@@ -4,6 +4,7 @@ Per ogni transcript: cartella di partenza, chiavi Jira citate nei messaggi di ut
 assistente (non negli output dei tool né nei messaggi di sistema), titolo della sessione.
 """
 import json
+import os
 import re
 
 from cc_panel import keys, paths
@@ -119,7 +120,10 @@ def index():
     if changed or set(files) != set(cached):
         target = _cache_file()
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps({"version": CACHE_VERSION, "files": files}), encoding="utf-8")
+        # Scrittura atomica: anche l'indicizzazione in background aggiorna questa cache.
+        temporary = target.with_name("tmp-%d-%s" % (os.getpid(), target.name))
+        temporary.write_text(json.dumps({"version": CACHE_VERSION, "files": files}), encoding="utf-8")
+        os.replace(str(temporary), str(target))
     return [{"sessionId": path.rsplit("/", 1)[-1][:-len(".jsonl")], "cwd": entry["cwd"],
              "keys": set(entry["keys"]), "title": entry["title"], "mtime": entry["mtime"],
              "prompts": entry["prompts"], "firstPrompt": entry["firstPrompt"], "edits": entry["edits"],

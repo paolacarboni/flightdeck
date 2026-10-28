@@ -212,7 +212,7 @@ class StartTest(TempHomeCase):
             self.closed = True
 
     def run_warm(self, issue=ISSUE, **kwargs):
-        events = []
+        events = self.events = []
         self.warm = self.Warm(events)
 
         def warm_up():
@@ -243,6 +243,36 @@ class StartTest(TempHomeCase):
         shutil.rmtree(self.home / ".claude/cc-panel")
         _, events = self.run_warm(dir_=str(self.other))
         self.assertEqual(events, ["jira"])
+
+    def test_model_loads_while_the_session_history_is_scanned(self):
+        original = folders.from_history
+
+        def history(key):
+            self.events.append("storia")
+            return original(key)
+        with mock.patch("cc_panel.folders.from_history", side_effect=history):
+            _, events = self.run_warm()
+        self.assertEqual(events[:3], ["modello", "storia", "jira"])
+        self.assertTrue(self.warm.closed)
+
+    def test_ticket_found_in_history_closes_the_warm_process_without_ranking(self):
+        transcript = self.home / ".claude/projects/p/t.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(json.dumps({"type": "user", "cwd": str(self.repo), "message": {"content": "OPS-9"}}) + "\n")
+        code, events = self.run_warm()
+        self.assertEqual(code, 0)
+        self.assertEqual(events, ["modello", "jira"])
+        self.assertTrue(self.warm.closed)
+        self.assertEqual(self.ranked, [])
+
+    def test_ranking_crash_does_not_stop_start(self):
+        def broken(issue, warn, dense=None):
+            raise RuntimeError("indice rotto")
+        with mock.patch("cc_panel.jira.issue", return_value=ISSUE):
+            code = start.run("OPS-9", auto=True, ask=None, launch=self.launched.append, out=self.out, rank=broken)
+        self.assertEqual(code, 0)
+        self.assertIn("cd %s &&" % self.repo, self.launched[0])
+        self.assertIn("Proposte dal ticket non disponibili: RuntimeError: indice rotto", self.out.getvalue())
 
     def test_warm_process_is_closed_when_jira_fails(self):
         code, events = self.run_warm(issue=jira.JiraError("Jira non raggiungibile"))

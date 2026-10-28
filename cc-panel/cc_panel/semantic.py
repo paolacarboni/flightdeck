@@ -95,7 +95,8 @@ def _fetch(name, remote, source, run, target):
         return
     url = "https://huggingface.co/%s/resolve/%s/%s" % (MODEL_REPO, MODEL_REVISION, remote)
     # Il proxy viene dall'ambiente; --proxy-negotiate serve solo se il proxy chiede Kerberos.
-    _check(run(["curl", "-fsSL", "--retry", "2", "--proxy-negotiate", "-U", ":", "-o", str(target), url],
+    _check(run(["curl", "-fsSL", "--retry", "2", "--connect-timeout", "20", "--proxy-negotiate", "-U", ":",
+                "-o", str(target), url],
                capture_output=True, text=True, timeout=STEP_TIMEOUT_SECONDS), "download di %s" % name)
 
 
@@ -104,10 +105,10 @@ def _install(run):
     venv_python = venv / "bin/python"
     if uv:
         steps = [[uv, "venv", "--python", sys.executable, str(venv)],
-                 [uv, "pip", "install", "--python", str(venv_python)] + list(REQUIREMENTS)]
+                 [uv, "pip", "install", "--python", str(venv_python), "--only-binary", ":all:"] + list(REQUIREMENTS)]
     else:
         steps = [[sys.executable, "-m", "venv", str(venv)],
-                 [str(venv_python), "-m", "pip", "install"] + list(REQUIREMENTS)]
+                 [str(venv_python), "-m", "pip", "install", "--only-binary=:all:"] + list(REQUIREMENTS)]
     work = list(zip(steps, ("creazione del venv", "installazione di %s" % ", ".join(REQUIREMENTS))))
     if venv_python.exists():  # setup ripetuto: il venv c'è già, si aggiornano solo le dipendenze
         work = work[1:]

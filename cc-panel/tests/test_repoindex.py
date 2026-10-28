@@ -1,10 +1,14 @@
 import json
+import os
 import subprocess
 import time
 from unittest import mock
 
 from cc_panel import repoindex
 from tests.helpers import TempHomeCase
+
+# Catturata all'import: in setUp gli helper sostituiscono spawn_build con un mock.
+SPAWN_BUILD = repoindex.spawn_build
 
 README = """[![build](https://ci/badge.svg)](https://ci)
 
@@ -40,7 +44,7 @@ class RepoIndexTest(TempHomeCase):
         self.worktree = self.projects / "Acme/team/app-OPS-9"
         self.worktree.mkdir(parents=True)
         (self.worktree / ".git").write_text("gitdir: %s\n" % (self.app / ".git/worktrees/app-OPS-9"))
-        self.notes = self.projects / "Personal/notes"
+        self.notes = self.projects / "Personal/team-notes"
         (self.notes / ".git").mkdir(parents=True)
 
     def group_of(self, candidates, folder):
@@ -52,7 +56,7 @@ class RepoIndexTest(TempHomeCase):
         app = self.group_of(found, self.app)
         self.assertEqual(app["folder"], str(self.app))
         self.assertEqual(sorted(app["folders"]), sorted([str(self.app), str(self.worktree)]))
-        self.assertEqual(app["group"], "origin:app")
+        self.assertEqual(app["group"], "origin:github.com/acme/app")
         self.assertIn("app", app["names"])
         self.assertIn("app-OPS-9", app["names"])
 
@@ -120,6 +124,31 @@ class RepoIndexTest(TempHomeCase):
                 by_group.setdefault(chunk["group"], []).append(chunk["text"])
         self.assertEqual(by_group, {app: ["OPS-1 Fatture primo messaggio"], notes: ["appunti della riunione secondo"]})
 
+    def test_same_remote_via_https_and_ssh_is_one_group_but_a_fork_is_not(self):
+        for name, url in (("app-https", "https://user@github.com/acme/app.git"),
+                          ("app-fork", "git@github.com:jdoe/app.git")):
+            (self.projects / name / ".git").mkdir(parents=True)
+            (self.projects / name / ".git/config").write_text('[remote "origin"]\n\turl = %s\n' % url)
+        found = repoindex.candidates()
+        self.assertIn(str(self.projects / "app-https"), self.group_of(found, self.app)["folders"])
+        fork = self.group_of(found, self.projects / "app-fork")
+        self.assertEqual(fork["group"], "origin:github.com/jdoe/app")
+        self.assertIn("app", fork["names"])
+
+    def test_generic_names_need_a_common_parent_to_be_relocated(self):
+        api = self.projects / "Acme/team/api"
+        (api / ".git").mkdir(parents=True)
+        found = repoindex.candidates()
+        index = found.index(self.group_of(found, api))
+        sessions = [session("s1", self.home / "vecchio/api", prompts=("nome generico, nessun genitore comune",)),
+                    session("s2", self.home / "old/team/api", prompts=("nome generico, genitore team comune",))]
+        texts = {(c["group"], c["text"]) for c in repoindex.chunks(found, sessions) if c["kind"] == "sessione"}
+        self.assertEqual(texts, {(index, "nome generico, genitore team comune")})
+
+    def test_manifest_with_a_non_text_description_does_not_break_the_build(self):
+        (self.app / "package.json").write_text(json.dumps({"description": ["non", "testo"]}))
+        self.assertTrue(repoindex.chunks(repoindex.candidates(), []))
+
     def test_moved_folders_are_found_by_name(self):
         other_app = self.projects / "Altro/app"
         (other_app / ".git").mkdir(parents=True)
@@ -128,8 +157,8 @@ class RepoIndexTest(TempHomeCase):
         app = found.index(self.group_of(found, self.app))
         notes = found.index(self.group_of(found, self.notes))
         sessions = [
-            # cartella spostata fuori da ~/Projects: «notes» è un nome unico
-            session("s1", self.home / "notes", prompts=("prima della riorganizzazione",)),
+            # cartella spostata fuori da ~/Projects: «team-notes» è un nome unico e specifico
+            session("s1", self.home / "team-notes", prompts=("prima della riorganizzazione",)),
             # file in un percorso vecchio: due candidati «app», vince quello con il genitore «team» uguale
             session("s2", self.home / "gone", files=[self.home / "Projects/team/app/src/a.py"], title="OPS-5 Lavoro"),
             # due «app» e nessun genitore che distingue: ambiguo, la sessione resta fuori
@@ -147,10 +176,20 @@ class RepoIndexTest(TempHomeCase):
         self.assertIn("lavoro %d" % (repoindex.SESSION_LIMIT + 4), texts)
         self.assertNotIn("lavoro 0", texts)
 
-    def test_build_writes_meta_then_vectors(self):
-        calls = []
-        meta = repoindex.build(now=1000.0, indexed=[], vectors=lambda folder: calls.append(folder))
-        self.assertEqual(calls, [repoindex.index_dir()])
+    def staged_vectors(self, folder):
+        """Finto `embed index`: controlla che il nuovo meta sia solo in preparazione, poi scrive i vettori."""
+        self.seen = {"next": json.loads((folder / repoindex.NEXT_META).read_text())["builtAt"],
+                     "current": repoindex.load()["builtAt"] if repoindex.load() else None}
+        (folder / repoindex.NEXT_VECTORS).write_bytes(b"vettori")
+        (folder / repoindex.NEXT_VECTORS_INFO).write_text(json.dumps({"builtAt": self.seen["next"]}))
+
+    def test_build_publishes_meta_and_vectors_together(self):
+        repoindex.build(now=500.0, indexed=[], vectors=self.staged_vectors)
+        meta = repoindex.build(now=1000.0, indexed=[], vectors=self.staged_vectors)
+        self.assertEqual(self.seen, {"next": 1000.0, "current": 500.0})
+        folder = repoindex.index_dir()
+        self.assertEqual(json.loads((folder / repoindex.VECTORS_INFO).read_text()), {"builtAt": 1000.0})
+        self.assertEqual({p.name for p in folder.iterdir()}, {repoindex.META, repoindex.VECTORS, repoindex.VECTORS_INFO})
         saved = repoindex.load()
         self.assertEqual(saved, meta)
         self.assertEqual(saved["version"], repoindex.VERSION)
@@ -158,15 +197,27 @@ class RepoIndexTest(TempHomeCase):
         self.assertEqual(len(saved["candidates"]), 2)
         self.assertTrue(saved["chunks"])
 
-    def test_build_respects_a_fresh_lock(self):
+    def test_build_respects_a_fresh_lock_even_if_still_empty(self):
         lock = repoindex.index_dir() / "index.lock"
         lock.parent.mkdir(parents=True)
-        lock.write_text(str(time.time()))
+        lock.write_text("")
         self.assertIsNone(repoindex.build(indexed=[], vectors=lambda folder: None))
         self.assertIsNone(repoindex.load())
-        lock.write_text(str(time.time() - repoindex.LOCK_STALE_SECONDS - 1))
+        old = time.time() - repoindex.LOCK_STALE_SECONDS - 1
+        os.utime(str(lock), (old, old))
         self.assertIsNotNone(repoindex.build(indexed=[], vectors=lambda folder: None))
         self.assertFalse(lock.exists())
+
+    def test_lock_outlives_the_vectors_timeout(self):
+        self.assertGreater(repoindex.LOCK_STALE_SECONDS, repoindex.semantic.INDEX_TIMEOUT_SECONDS)
+
+    def test_a_build_does_not_remove_a_lock_it_does_not_own(self):
+        lock = repoindex.index_dir() / "index.lock"
+
+        def steal(folder):
+            lock.write_text("altro processo")
+        repoindex.build(indexed=[], vectors=steal)
+        self.assertEqual(lock.read_text(), "altro processo")
 
     def test_vectors_failure_in_the_venv_is_raised(self):
         failed = subprocess.CompletedProcess([], 1, "", "Traceback\nIndexMismatch: vettori")
@@ -175,8 +226,29 @@ class RepoIndexTest(TempHomeCase):
             with self.assertRaises(repoindex.VectorsError) as raised:
                 repoindex.build(indexed=[])
         self.assertIn("IndexMismatch: vettori", str(raised.exception))
-        self.assertIsNotNone(repoindex.load())
+        self.assertIsNotNone(repoindex.load())  # prima costruzione: il meta serve almeno alla ricerca per parole
         self.assertFalse((repoindex.index_dir() / "index.lock").exists())
+
+    def test_failed_vectors_keep_the_previous_pair(self):
+        repoindex.build(now=500.0, indexed=[], vectors=self.staged_vectors)
+
+        def failing(folder):
+            raise repoindex.VectorsError("onnxruntime assente")
+        with self.assertRaises(repoindex.VectorsError):
+            repoindex.build(now=1000.0, indexed=[], vectors=failing)
+        folder = repoindex.index_dir()
+        self.assertEqual(repoindex.load()["builtAt"], 500.0)
+        self.assertEqual(json.loads((folder / repoindex.VECTORS_INFO).read_text()), {"builtAt": 500.0})
+        self.assertFalse((folder / repoindex.NEXT_META).exists())
+
+    def test_spawn_build_waits_between_attempts_and_survives_fork_errors(self):
+        with mock.patch("subprocess.Popen") as popen:
+            self.assertTrue(SPAWN_BUILD(now=1000.0))
+            self.assertFalse(SPAWN_BUILD(now=1000.0 + repoindex.SPAWN_BACKOFF_SECONDS - 1))
+            self.assertTrue(SPAWN_BUILD(now=1000.0 + repoindex.SPAWN_BACKOFF_SECONDS + 1))
+        self.assertEqual(popen.call_count, 2)
+        with mock.patch("subprocess.Popen", side_effect=OSError("troppi processi")):
+            self.assertFalse(SPAWN_BUILD(now=9999999.0))
 
     def test_without_semantic_setup_the_index_stays_lexical(self):
         with mock.patch("cc_panel.semantic.python", return_value=None), mock.patch("subprocess.run") as run:

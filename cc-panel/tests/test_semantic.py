@@ -59,6 +59,7 @@ class SemanticTest(TempHomeCase):
         self.assertEqual(self.commands[0][:2], ["/opt/uv", "venv"])
         install = self.commands[1]
         self.assertEqual(install[:3], ["/opt/uv", "pip", "install"])
+        self.assertIn("--only-binary", install)
         for requirement in semantic.REQUIREMENTS:
             self.assertIn(requirement, install)
 
@@ -75,6 +76,7 @@ class SemanticTest(TempHomeCase):
             self.setup()
         self.assertEqual(self.commands[0][1:3], ["-m", "venv"])
         self.assertEqual(self.commands[1][1:4], ["-m", "pip", "install"])
+        self.assertIn("--only-binary=:all:", self.commands[1])
 
     def test_download_uses_curl_on_pinned_revision(self):
         def fake_run(command, **kwargs):
@@ -88,6 +90,7 @@ class SemanticTest(TempHomeCase):
         with mock.patch("shutil.which", return_value=None):
             code = semantic.setup(run=fake_run, out=io.StringIO(), files=FILES)
         self.assertEqual(code, 0)
+        self.assertTrue(all("--connect-timeout" in c for c in self.commands if c[0] == "curl"))
         urls = [c[-1] for c in self.commands if c[0] == "curl"]
         self.assertEqual(sorted(urls), sorted("https://huggingface.co/%s/resolve/%s/remoto/%s"
                                               % (semantic.MODEL_REPO, semantic.MODEL_REVISION, n) for n in CONTENT))

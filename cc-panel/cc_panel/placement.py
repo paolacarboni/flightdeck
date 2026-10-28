@@ -38,7 +38,11 @@ an and are as at be by for from has have in is it its of on or that the this to 
 
 
 class DenseError(Exception):
-    pass
+    """Lato denso non disponibile; `rebuild` se la causa è un indice da ricostruire."""
+
+    def __init__(self, message, rebuild=False):
+        super().__init__(message)
+        self.rebuild = rebuild
 
 
 def query_text(issue):
@@ -106,7 +110,8 @@ class DenseProcess:
             self.close()
             raise DenseError("oltre %.1f s" % timeout) from None
         if self.process.returncode != 0:
-            raise DenseError((stderr.strip().splitlines() or ["codice %d" % self.process.returncode])[-1][:200])
+            last = (stderr.strip().splitlines() or ["codice %d" % self.process.returncode])[-1][:200]
+            raise DenseError(last, rebuild=last.startswith("IndexMismatch"))
         try:
             return {int(group): (float(score), int(chunk)) for group, score, chunk in json.loads(stdout)["groups"]}
         except (ValueError, KeyError, TypeError) as error:
@@ -143,10 +148,23 @@ def _dense(text, timeout):
         process.close()
 
 
+def _key_pattern(key):
+    """La chiave intera nel nome di una cartella: `OPS-586` trova `ops586` e `x-OPS-586-y`, non `ops-5860` né `xops-586`."""
+    project, number = key.lower().rsplit("-", 1)
+    return re.compile(r"(?<![a-z0-9])%s-?%s(?![0-9])" % (re.escape(project), number))
+
+
+def _aligned(scores, chunks, count):
+    """Ogni punteggio denso indica un candidato dell'indice e un frammento di quel candidato."""
+    return all(0 <= group < count and 0 <= chunk < len(chunks) and chunks[chunk]["group"] == group
+               for group, (_, chunk) in scores.items())
+
+
 def _folder(candidate, key):
     """Cartella esistente del candidato: il worktree che contiene la chiave, altrimenti il clone principale."""
     members = [Path(f) for f in candidate["folders"]]
-    keyed = [f for f in members if key.lower() in f.name.lower()]
+    pattern = _key_pattern(key)
+    keyed = [f for f in members if pattern.search(f.name.lower())]
     for folder in keyed + [Path(candidate["folder"])] + members:
         if folder.is_dir():
             return folder
@@ -182,8 +200,14 @@ def rank(issue, limit=LIMIT, budget=BUDGET_SECONDS, dense=None, clock=time.monot
     else:
         try:
             scores = (dense or _dense)(text, remaining)
+            if not _aligned(scores, chunks, len(candidates_)):
+                scores = {}
+                raise DenseError("vettori non allineati all'indice", rebuild=True)
         except DenseError as error:
-            warn("ricerca semantica non disponibile (%s): uso solo le parole del ticket" % error)
+            warn("ricerca semantica non disponibile (%s): uso solo le parole del ticket%s"
+                 % (error, "; ricostruisco l'indice in background" if error.rebuild else ""))
+            if error.rebuild:
+                repoindex.spawn_build()
     if scores:
         rankings.append(sorted(scores, key=lambda group: -scores[group][0]))
     boosts = {i for i, candidate in enumerate(candidates_) if mentioned(candidate, text)}

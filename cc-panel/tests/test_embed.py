@@ -8,7 +8,7 @@ try:
 except ImportError:  # numpy c'è di sicuro solo nel venv della ricerca semantica
     np = None
 if np is not None:
-    from cc_panel import embed
+    from cc_panel import embed, repoindex
 
 
 class FakeModel:
@@ -38,8 +38,13 @@ class EmbedTest(TempHomeCase):
         self.write_meta(1000.0)
 
     def write_meta(self, built_at):
-        (self.folder / "meta.json").write_text(json.dumps({"version": 1, "builtAt": built_at, "candidates": [],
-                                                           "chunks": self.chunks}))
+        """Meta della build in corso, come lo scrive repoindex.build prima di calcolare i vettori."""
+        (self.folder / repoindex.NEXT_META).write_text(json.dumps({"version": 1, "builtAt": built_at,
+                                                                   "candidates": [], "chunks": self.chunks}))
+
+    def build_and_publish(self, model):
+        embed.build_vectors(self.folder, model)
+        repoindex._publish(self.folder)
 
     def test_pool_averages_only_real_tokens_and_normalizes(self):
         hidden = np.array([[[1.0, 0.0], [3.0, 0.0], [100.0, 100.0]]])
@@ -57,25 +62,38 @@ class EmbedTest(TempHomeCase):
     def test_index_writes_aligned_vectors_and_reuses_cache(self):
         model = FakeModel()
         embed.build_vectors(self.folder, model)
-        self.assertEqual(np.load(str(self.folder / "vectors.npy")).shape[0], len(self.chunks))
+        self.assertEqual(np.load(str(self.folder / repoindex.NEXT_VECTORS)).shape[0], len(self.chunks))
+        self.assertFalse((self.folder / repoindex.VECTORS).exists())
         self.chunks[3]["text"] = "atlas telemetria"
         self.write_meta(2000.0)
         model.encoded = []
         embed.build_vectors(self.folder, model)
         self.assertEqual(model.encoded, ["atlas telemetria"])
-        info = json.loads((self.folder / "vectors.json").read_text())
+        info = json.loads((self.folder / repoindex.NEXT_VECTORS_INFO).read_text())
         self.assertEqual(info, {"builtAt": 2000.0, "model": embed.semantic.MODEL_ID, "rows": 4})
+
+    def test_corrupted_cache_is_rebuilt(self):
+        (self.folder / repoindex.CACHE).write_bytes(b"PK\x03\x04 zip troncato")
+        model = FakeModel()
+        embed.build_vectors(self.folder, model)
+        self.assertEqual(len(model.encoded), len(self.chunks))
 
     def test_query_ranks_groups(self):
         model = FakeModel()
-        embed.build_vectors(self.folder, model)
+        self.build_and_publish(model)
         scores = embed.query(self.folder, "telemetria della repository", model)
         self.assertEqual(scores[0][0], 1)
         self.assertEqual(scores[0][2], 2)
         self.assertEqual(len(scores), 3)
 
     def test_query_refuses_vectors_of_another_index(self):
-        embed.build_vectors(self.folder, FakeModel())
+        self.build_and_publish(FakeModel())
         self.write_meta(3000.0)
+        repoindex._publish(self.folder)
+        with self.assertRaises(embed.IndexMismatch):
+            embed.query(self.folder, "fatture", FakeModel())
+
+    def test_query_without_vectors_is_a_mismatch_not_a_crash(self):
+        repoindex._publish(self.folder)
         with self.assertRaises(embed.IndexMismatch):
             embed.query(self.folder, "fatture", FakeModel())

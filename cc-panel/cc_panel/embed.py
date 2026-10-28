@@ -1,8 +1,9 @@
 """Lato denso della ricerca della cartella, eseguito con il python del venv (numpy, onnxruntime, tokenizers).
 
-`python -m cc_panel.embed index <cartella>`: vettori dei frammenti di meta.json, ricalcolando solo i testi
-nuovi (cache per hash del testo). `python -m cc_panel.embed query <cartella>`: testo del ticket da stdin,
-su stdout `{"groups": [[candidato, punteggio, frammento migliore], ...]}` dal più simile.
+`python -m cc_panel.embed index <cartella>`: vettori dei frammenti del meta in preparazione (meta.next.json),
+ricalcolando solo i testi nuovi (cache per hash del testo); li pubblica repoindex insieme al meta.
+`python -m cc_panel.embed query <cartella>`: testo del ticket da stdin, su stdout
+`{"groups": [[candidato, punteggio, frammento migliore], ...]}` dal più simile, sulla coppia pubblicata.
 """
 import hashlib
 import json
@@ -12,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from cc_panel import semantic
+from cc_panel import repoindex, semantic
 
 MAX_TOKENS = 512
 BATCH = 32
@@ -66,7 +67,9 @@ class Model:
 def group_scores(vectors, groups, vector):
     """Per candidato il frammento più simile: [[candidato, punteggio, frammento]] dal punteggio più alto."""
     best = {}
-    for index, (group, score) in enumerate(zip(groups, (vectors @ vector).tolist())):
+    with np.errstate(all="ignore"):  # numpy 2.0 su Accelerate segnala eccezioni spurie nel prodotto float32
+        similarities = (vectors @ vector).tolist()
+    for index, (group, score) in enumerate(zip(groups, similarities)):
         if group not in best or score > best[group][0]:
             best[group] = (score, index)
     return sorted(([group, score, index] for group, (score, index) in best.items()), key=lambda row: -row[1])
@@ -76,8 +79,8 @@ def _key(text):
     return hashlib.sha1(("%s\n%s" % (semantic.MODEL_ID, text)).encode("utf-8")).hexdigest()
 
 
-def _meta(folder):
-    return json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+def _meta(path):
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _replace(target, write):
@@ -87,35 +90,38 @@ def _replace(target, write):
 
 
 def build_vectors(folder, model):
-    meta = _meta(folder)
+    meta = _meta(folder / repoindex.NEXT_META)
     texts = [chunk["text"] for chunk in meta["chunks"]]
     cache = {}
     try:
-        with np.load(str(folder / "cache.npz")) as saved:
+        with np.load(str(folder / repoindex.CACHE)) as saved:
             cache = dict(zip(saved["keys"].tolist(), saved["vectors"]))
-    except (OSError, ValueError, KeyError):
-        pass
+    except Exception:  # noqa: BLE001 — cache illeggibile (anche zip troncato): si ricalcola tutto
+        cache = {}
     keys = [_key(text) for text in texts]
     missing = {key: text for key, text in zip(keys, texts) if key not in cache}
     if missing:
         cache.update(zip(missing, model.encode(list(missing.values()), "passage")))
     vectors = np.array([cache[key] for key in keys], dtype=np.float32)
-    _replace(folder / "vectors.npy", lambda path: np.save(str(path), vectors))
+    _replace(folder / repoindex.NEXT_VECTORS, lambda path: np.save(str(path), vectors))
     kept = sorted(set(keys))
-    _replace(folder / "cache.npz", lambda path: np.savez(str(path), keys=np.array(kept),
+    _replace(folder / repoindex.CACHE, lambda path: np.savez(str(path), keys=np.array(kept),
                                                          vectors=np.array([cache[k] for k in kept], dtype=np.float32)))
     info = {"builtAt": meta["builtAt"], "model": semantic.MODEL_ID, "rows": len(keys)}
-    _replace(folder / "vectors.json", lambda path: path.write_text(json.dumps(info), encoding="utf-8"))
+    _replace(folder / repoindex.NEXT_VECTORS_INFO, lambda path: path.write_text(json.dumps(info), encoding="utf-8"))
 
 
 def query(folder, text, model):
-    meta = _meta(folder)
-    info = json.loads((folder / "vectors.json").read_text(encoding="utf-8"))
-    vectors = np.load(str(folder / "vectors.npy"))
+    try:
+        meta = _meta(folder / repoindex.META)
+        info = _meta(folder / repoindex.VECTORS_INFO)
+        vectors = np.load(str(folder / repoindex.VECTORS))
+    except (OSError, ValueError) as error:
+        raise IndexMismatch("vettori assenti o illeggibili (%s)" % type(error).__name__) from None
     rows = len(meta["chunks"])
     if (info.get("builtAt"), info.get("model"), info.get("rows"), vectors.shape[0]) != \
             (meta.get("builtAt"), semantic.MODEL_ID, rows, rows):
-        raise IndexMismatch("vettori non allineati all'indice: ricostruiscilo con `cc-panel index`")
+        raise IndexMismatch("vettori non allineati all'indice")
     return group_scores(vectors, [chunk["group"] for chunk in meta["chunks"]], model.encode([text], "query")[0])
 
 

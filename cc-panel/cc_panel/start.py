@@ -9,16 +9,15 @@ NAME_SUMMARY_LIMIT = 60
 RESUME_ENTRIES = 2
 
 
-def _is_new(key):
-    """Ticket mai lavorato: niente cartella ricordata né sessioni che lo citano."""
-    return not (folders.remembered(key) or folders.from_history(key))
-
-
 def _from_ticket(issue, rank, dense, out):
     """Cartelle scelte dal contesto del ticket, con l'evidenza."""
     started = time.monotonic()
     options = {"dense": dense} if dense else {}
-    ranked = rank(issue, warn=lambda message: print(message, file=out), **options)
+    try:
+        ranked = rank(issue, warn=lambda message: print(message, file=out), **options)
+    except Exception as error:  # noqa: BLE001 — le proposte non devono mai impedire di aprire la sessione
+        print("Proposte dal ticket non disponibili: %s: %s" % (type(error).__name__, error), file=out)
+        return []
     if ranked:
         elapsed = ("%.1f" % (time.monotonic() - started)).replace(".", ",")
         print("Cartelle proposte dal ticket (%s s):" % elapsed, file=out)
@@ -34,14 +33,14 @@ def _proposals(key, issue, ranking, out):
     return proposals + [repo for repo in folders.repos() if repo not in proposals], dict(ranked)
 
 
-def _print_proposals(proposals, notes, out):
+def _print_proposals(proposals, evidence, out):
     for index, folder in enumerate(proposals, 1):
-        note = notes.get(folder)
-        print("  %2d) %s%s" % (index, folder, " — %s" % note if note else ""), file=out)
+        why = evidence.get(folder)
+        print("  %2d) %s%s" % (index, folder, " — %s" % why if why else ""), file=out)
 
 
-def _choose_folder(proposals, ask, out, notes=None):
-    _print_proposals(proposals, notes or {}, out)
+def _choose_folder(proposals, ask, out, evidence=None):
+    _print_proposals(proposals, evidence or {}, out)
     while True:
         answer = ask("Cartella [invio = 1, numero o percorso]: ").strip()
         if not answer and proposals:
@@ -87,8 +86,15 @@ def _run(key, new, dir_, auto, ask, launch, out, rank, warm_up):
                 state, key, session.get("name")), file=out)
             launch(terminal.resume_command(cwd, session["sessionId"]))
             return 0
-    # Ticket nuovo senza --dir: il lato denso carica il modello mentre Jira risponde.
-    ranking = (rank, warm_up()) if not dir_ and _is_new(key) else None
+    ranking = None
+    if not dir_ and not folders.remembered(key):
+        # Il lato denso carica il modello mentre si leggono la storia delle sessioni e il ticket da Jira;
+        # se la storia cita già il ticket le proposte non servono e il processo si chiude.
+        dense = warm_up()
+        if not folders.from_history(key):
+            ranking = (rank, dense)
+        elif dense:
+            dense.close()
     try:
         return _open(key, dir_, auto, ask, launch, out, ranking)
     finally:
@@ -109,16 +115,16 @@ def _open(key, dir_, auto, ask, launch, out, ranking):
             print("Cartella inesistente: %s" % folder, file=sys.stderr)
             return 1
     elif auto:
-        proposals, notes = _proposals(key, issue, ranking, out)
+        proposals, evidence = _proposals(key, issue, ranking, out)
         if not proposals:
             print("Nessuna cartella da proporre per %s: usa --dir <percorso>." % key, file=sys.stderr)
             return 1
-        _print_proposals(proposals[:len(notes)], notes, out)
+        _print_proposals(proposals[:len(evidence)], evidence, out)
         folder = proposals[0]
     else:
         try:
-            proposals, notes = _proposals(key, issue, ranking, out)
-            folder = _choose_folder(proposals, ask, out, notes)
+            proposals, evidence = _proposals(key, issue, ranking, out)
+            folder = _choose_folder(proposals, ask, out, evidence)
         except EOFError:
             folder = folders.remembered(key)
             if not folder:
