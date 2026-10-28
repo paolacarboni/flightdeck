@@ -54,3 +54,10 @@ class LaunchTest(unittest.TestCase):
             with self.assertRaises(terminal.LaunchError) as ctx:
                 terminal.launch("echo")
         self.assertIn("Automazione", str(ctx.exception))
+
+
+class ForkCommandTest(unittest.TestCase):
+    def test_fork_resumes_session_in_new_fork_with_quoted_prompt(self):
+        cmd = terminal.fork_command(Path("/a b"), "abc-1", "Spiegami «cache-aside», non l'altro")
+        self.assertEqual(cmd, "cd '/a b' && claude --resume abc-1 --fork-session "
+                              "'Spiegami «cache-aside», non l'\"'\"'altro'")

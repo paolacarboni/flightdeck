@@ -16,6 +16,12 @@ def resume_command(cwd, session_id):
     return "cd %s && claude --ide --resume %s" % (shlex.quote(str(cwd)), shlex.quote(session_id))
 
 
+def fork_command(cwd, session_id, prompt):
+    """Fork della sessione: stesso contesto, nuova sessione; l'originale non viene toccata."""
+    return "cd %s && claude --resume %s --fork-session %s" % (
+        shlex.quote(str(cwd)), shlex.quote(session_id), shlex.quote(prompt))
+
+
 def open_folder_command(folder):
     return "cd %s" % shlex.quote(str(folder))
 

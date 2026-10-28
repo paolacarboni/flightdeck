@@ -15,10 +15,12 @@ already loaded. And a cockpit panel with all your epics on the desktop.**
 | **Repos per epic** | Derived from your Claude session history, no manual mapping, with branch, uncommitted files, unpushed commits and age of the last commit. |
 | **To track** | Sessions with real work (file edits or commits) and no ticket are evaluated once by Claude Haiku against your epics. Work matching an open task is linked automatically; the rest becomes at most 5 themes, ready to be created in Jira. |
 | **Stale sessions** | Open sessions idle for more than 24 h are flagged: `/park` and `/exit` them. |
+| **Decision feed** | Every session's status, the important decisions it declares (`cc-panel decide`), what needs your attention, and a one-command fork to learn the concept behind a decision (`cc-panel dive ID`). See [docs/decision-feed.md](docs/decision-feed.md). |
+| **Menu bar** | xbar plugin `xbar/cc-panel.10s.sh` (`cc-panel bar`): active sessions and today's decisions in the menu bar. |
 
 The panel (top left, refreshed every 5 minutes) shows annunciators (in progress, waiting for you, stale,
-to track), a navigation arc with every epic on its completion percentage, and the epic list. Drag the top
-bar to move it; double-click to put it back.
+to track), a navigation arc with every epic on its completion percentage, and the epic list.
+The four panels sit on a fixed grid and scale with the screen.
 
 ## How it works
 
@@ -56,6 +58,10 @@ cc-panel park KEY < note.md                          # what /park uses
 cc-panel track S1 S2 --epic KEY --summary "Title"    # or --new-epic
 cc-panel link SESSION KEY | ignore SESSION | resume SESSION | open DIR
 cc-panel digest | index | semantic-setup [--from DIR]
+cc-panel feed [--json] [--follow]                    # live sessions, decisions, attention points
+cc-panel decide "Title" --why ... --alt ... [--watch ...] [--learn ...]
+cc-panel dive ID                                     # fork the session to explain a decision
+cc-panel bar                                         # xbar menu (used by xbar/cc-panel.10s.sh)
 ```
 
 ## Files

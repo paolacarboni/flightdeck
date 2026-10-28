@@ -12,6 +12,7 @@ Salva una nota di ripresa per il ticket su cui stai lavorando, così la prossima
    - `**Dove:** <cartella> · branch <branch>`
    - `**Fatto:** <cosa è stato completato in questa sessione, 1-3 punti>`
    - `**Prossimo passo:** <la prima azione da fare alla ripresa, eseguibile senza altro contesto>`
+   - `**Decisioni:** <le decisioni importanti della sessione (blocchi 🟧 DECISIONE e `cc-panel decide`), titolo e motivo, separate da punto e virgola, oppure "nessuna">`
    - `**Blocchi:** <cosa aspetta decisioni o altre persone, oppure "nessuno">`
    - `**File chiave:** <path rilevanti, separati da virgola>`
 4. Salvala passando il testo via heredoc con delimitatore tra apici:

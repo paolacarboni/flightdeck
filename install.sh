@@ -30,7 +30,8 @@ install_part() {
     cc-panel)
       link "$ROOT/cc-panel/bin/cc-panel" "$BIN/cc-panel"
       link "$ROOT/cc-panel/commands/park.md" "$COMMANDS/park.md"
-      link "$ROOT/cc-panel/widget" "$WIDGETS/cc-panel.widget" ;;
+      link "$ROOT/cc-panel/widget" "$WIDGETS/cc-panel.widget"
+      link "$ROOT/cc-panel/xbar/cc-panel.10s.sh" "$XBAR/cc-panel.10s.sh" ;;
     focus-panel)
       link "$ROOT/focus-panel/bin/focus-panel" "$BIN/focus-panel"
       link "$ROOT/focus-panel/widget" "$WIDGETS/focus-panel.widget" ;;

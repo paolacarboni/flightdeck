@@ -126,7 +126,7 @@ invented data, no Jira needed. harlock-panel needs nothing at all.
 
 ```
 flightdeck/
-├── cc-panel/        Python CLI + Übersicht widget + /park command
+├── cc-panel/        Python CLI + Übersicht widget + xbar plugin + /park command
 ├── focus-panel/     Python CLI + Übersicht widget
 ├── news-panel/      Python CLI + Übersicht widget
 ├── harlock-panel/   Übersicht widget only

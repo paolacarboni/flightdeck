@@ -12,6 +12,10 @@ def state_file():
     return home() / ".claude/cc-panel/state.json"
 
 
+def events_file():
+    return home() / ".claude/cc-panel/events.jsonl"
+
+
 def briefs_dir():
     return home() / ".claude/cc-panel/briefs"
 

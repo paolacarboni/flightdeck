@@ -1,12 +1,14 @@
 """Punto di ingresso di cc-panel."""
 import argparse
 import json
+import os
 import sys
+import time
 from datetime import datetime
 
 from pathlib import Path
 
-from cc_panel import board, demo, digest, jira, keys, notes, paths, repoindex, semantic, start, terminal, tracking
+from cc_panel import board, demo, digest, feed, jira, keys, menubar, notes, paths, repoindex, semantic, start, terminal, tracking
 
 
 def build_parser():
@@ -41,7 +43,87 @@ def build_parser():
     board_cmd = sub.add_parser("board", help="epiche con attività, repo, sessioni e riprese")
     board_cmd.add_argument("--json", action="store_true", help="modello completo in JSON (per il pannello)")
     board_cmd.add_argument("--demo", action="store_true", help="dati inventati, senza Jira (per provare il pannello)")
+    sub.add_parser("hook", help="registra un evento degli hook Claude Code (JSON da stdin, non fallisce mai)")
+    decide = sub.add_parser("decide", help="registra una decisione importante della sessione corrente")
+    decide.add_argument("title")
+    decide.add_argument("--why", default="", help="motivazione")
+    decide.add_argument("--alt", action="append", default=[], help="alternativa scartata (ripetibile)")
+    decide.add_argument("--watch", default="", help="punto da attenzionare")
+    decide.add_argument("--learn", default="", help="concetto da approfondire")
+    decide.add_argument("--session", help="id sessione (default: CLAUDE_CODE_SESSION_ID)")
+    feed_cmd = sub.add_parser("feed", help="sessioni live, decisioni e punti da attenzionare")
+    feed_cmd.add_argument("--json", action="store_true", help="modello in JSON (per il pannello)")
+    feed_cmd.add_argument("--follow", action="store_true", help="aggiorna ogni %d secondi" % FOLLOW_SECONDS)
+    sub.add_parser("bar", help="menu xbar del feed (per la barra dei menu)")
+    dive = sub.add_parser("dive", help="apre una fork della sessione per approfondire una decisione")
+    dive.add_argument("id")
     return parser
+
+
+FOLLOW_SECONDS = 5
+PLAN_REMINDER = ("Piano approvato. Per ogni decisione IMPORTANTE del piano (difficile da annullare, alternative "
+                 "reali scartate, impatto su interfacce/dati/sicurezza/costi, deviazione dalla richiesta, "
+                 "assunzione non verificata) esegui: cc-panel decide \"<titolo>\" --why \"...\" --alt \"...\" "
+                 "[--watch \"...\"] [--learn \"<concetto>\"]. Massimo 3-5, niente decisioni banali.")
+
+
+def hook():
+    """Non fallisce mai: un hook rotto non deve bloccare la sessione."""
+    try:
+        event = feed.record_hook(json.loads(sys.stdin.read() or "null"), datetime.now())
+    except Exception:  # noqa: BLE001 - qualsiasi errore va ignorato
+        return 0
+    if event and event["kind"] == "plan":
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                                 "additionalContext": PLAN_REMINDER}}))
+    return 0
+
+
+def decide(args):
+    session = args.session or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not session:
+        print("Sessione Claude non trovata: esegui decide da una sessione o passa --session.", file=sys.stderr)
+        return 1
+    record = feed.decide(session, Path.cwd(), args.title, why=args.why, alternatives=args.alt,
+                         watch=args.watch, learn=args.learn)
+    print("Decisione registrata: %s" % record["id"])
+    return 0
+
+
+def show_feed(args):
+    while True:
+        model = feed.build(feed.load(), datetime.now())
+        text = json.dumps(model, ensure_ascii=False) if args.json else feed.render_text(model)
+        if not args.follow:
+            print(text)
+            return 0
+        print("\033[2J\033[H" + text, flush=True)
+        try:
+            time.sleep(FOLLOW_SECONDS)
+        except KeyboardInterrupt:
+            return 0
+
+
+def show_bar():
+    now = datetime.now()
+    cmd = Path(__file__).resolve().parent.parent / "bin" / "cc-panel"
+    print("\n".join(menubar.render(feed.build(feed.load(), now), now, str(cmd))))
+    return 0
+
+
+def dive(decision_id):
+    decision = feed.find(decision_id)
+    if decision is None:
+        print("Decisione non trovata: %s" % decision_id, file=sys.stderr)
+        return 1
+    try:
+        terminal.launch(terminal.fork_command(decision.get("cwd") or Path.home(), decision["session"],
+                                              feed.dive_prompt(decision)))
+    except terminal.LaunchError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    return 0
+
 
 
 def park(key):
@@ -96,6 +178,16 @@ def index():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.command == "hook":
+        return hook()
+    if args.command == "decide":
+        return decide(args)
+    if args.command == "feed":
+        return show_feed(args)
+    if args.command == "bar":
+        return show_bar()
+    if args.command == "dive":
+        return dive(args.id)
     if args.command == "index":
         return index()
     if args.command == "semantic-setup":
